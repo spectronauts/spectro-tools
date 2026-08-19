@@ -1,0 +1,6 @@
+/artifacts/*
+!/artifacts/.gitkeep
+
+# Alternate output locations beneath this tool.
+/palette-preupgrade-*/
+/pre-upgrade-values.env

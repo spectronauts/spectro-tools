@@ -1,0 +1,5 @@
+/vertex.config
+/*.local.config
+/artifacts/
+.DS_Store
+**/.DS_Store

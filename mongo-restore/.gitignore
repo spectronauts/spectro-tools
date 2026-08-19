@@ -1,0 +1,13 @@
+# macOS metadata
+.DS_Store
+**/.DS_Store
+
+# Runtime output
+logs/
+*.log
+
+# Local credentials and recovery data
+*.kubeconfig
+*.env
+/backups/
+/source-backup-*/

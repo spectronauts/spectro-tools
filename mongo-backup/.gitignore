@@ -1,0 +1,12 @@
+/artifacts/*
+!/artifacts/.gitkeep
+!/artifacts/packages/
+!/artifacts/packages/**
+
+# Palette MongoDB backup output, regardless of its location in the repository.
+palette-mongo-backup-*/
+palette-mongo-backup-*.log
+
+# Local cluster access and environment overrides.
+*.kubeconfig
+*.env

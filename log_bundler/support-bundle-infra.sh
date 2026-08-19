@@ -1,0 +1,647 @@
+#!/bin/bash
+# Copyright 2024 Spectro Cloud
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+COMMON_CONFIG="${SCRIPT_DIR}/../config/common-config.sh"
+COMMON_FUNCTIONS="${SCRIPT_DIR}/../config/common-functions.sh"
+# shellcheck source=../config/common-config.sh
+source "${COMMON_CONFIG}"
+# shellcheck source=../config/common-functions.sh
+source "${COMMON_FUNCTIONS}"
+
+SB_VERSION=20251117+16d5f3c
+
+# set -e
+# set -x
+
+SYSTEM_NAMESPACES=(capa-system capi-kubeadm-bootstrap-system capi-kubeadm-control-plane-system capi-system capi-webhook-system cert-manager default harbor konveyor-forklift kube-system kube-public kubernetes-dashboard kubevirt longhorn-system os-patch palette-system piraeus-system reach-system rook-ceph spectro-system spectro-task system-upgrade vm-dashboard zot-system)
+
+API_RESOURCES=(apiservices clusterroles clusterrolebindings crds csr mutatingwebhookconfigurations namespaces nodes priorityclasses pv storageclasses validatingwebhookconfigurations volumeattachments)
+
+API_RESOURCES_NAMESPACED=(apiservices configmaps cronjobs daemonsets deployments endpoints endpointslices events hpa ingress jobs leases limitranges networkpolicies poddisruptionbudgets pods pvc replicasets resourcequotas roles rolebindings services serviceaccounts statefulsets)
+
+function spectro-k8s-defaults() {
+  if ! command -v kubectl >/dev/null 2>&1; then
+    techo "k8s-resources: kubectl command not found"
+    return
+  fi
+
+	IS_ENTERPRISE_CLUSTER=false
+	if kubectl get ns --output=custom-columns="Name:.metadata.name" --no-headers 2>/dev/null | grep 'hubble-system'; then
+		IS_ENTERPRISE_CLUSTER=true
+    CLUSTER_NAME="spectro-enterprise-cluster"
+		techo "This is an Enterprise cluster. Collecting logs from all namespaces"
+	fi
+
+	IS_PCG_CLUSTER=false
+	if [[ "$IS_ENTERPRISE_CLUSTER" == false ]] && kubectl get deployment -n jet-system --output=custom-columns="Name:.metadata.name" --no-headers 2>/dev/null | grep 'jet'; then
+		IS_PCG_CLUSTER=true
+    CLUSTER_NAME="spectro-pcg-cluster"
+		techo "This is a PCG cluster. Collecting logs from all namespaces"
+	fi
+
+  if [[ "$IS_ENTERPRISE_CLUSTER" == true ]] || [[ "$IS_PCG_CLUSTER" == true ]]; then
+		SYSTEM_NAMESPACES=($(kubectl get ns --output=custom-columns="Name:.metadata.name" --no-headers 2>/dev/null))
+    return 0
+  fi
+
+  for NS in "${SYSTEM_NAMESPACES[@]}"; do
+    if ! kubectl get ns "$NS" >/dev/null 2>&1; then
+      for i in "${!SYSTEM_NAMESPACES[@]}"; do
+        if [[ ${SYSTEM_NAMESPACES[i]} = "$NS" ]]; then
+          unset 'SYSTEM_NAMESPACES[i]'
+          techo "Namespace $NS not found in the cluster. Removing from the list."
+        fi
+      done
+    fi
+  done
+
+  CLUSTER_NSS=$(kubectl get ns --output=custom-columns="Name:.metadata.name" --no-headers -l 'spectrocloud.com/cluster-name' 2>/dev/null)
+  if [[ -z "${CLUSTER_NSS}" ]]; then
+    CLUSTER_NSS=$(kubectl get ns -o=name | grep '^namespace/cluster-' | sed "s/^.\{10\}//")
+  fi
+
+  if [[ -z "${CLUSTER_NSS}" ]]; then
+    techo "Palette cluster namespace is empty."
+  else
+    for NS in $(echo $CLUSTER_NSS | tr " " "\n"); do
+      techo "Adding namespace $NS for logs collection."
+      SYSTEM_NAMESPACES+=("$NS")
+
+      if [[ "$NS" =~ [0-9a-fA-F\-]{8,} ]]; then
+        CLUSTER_NS="$NS"
+        techo "Cluster namespace: $CLUSTER_NS"
+      fi
+    done 
+  fi
+
+  SYSTEM_UPGRADE_UUID_NS=$(kubectl get ns -o=name | grep '^namespace/system-upgrade-' | sed "s/^.\{10\}//")
+  if [[ -z "${SYSTEM_UPGRADE_UUID_NS}" ]]; then
+    techo "System upgrade UUID namespace is empty."
+  else
+    for NS in $(echo $SYSTEM_UPGRADE_UUID_NS | tr " " "\n"); do
+      techo "Adding namespace $NS for logs collection."
+      SYSTEM_NAMESPACES+=("$NS")
+    done
+  fi
+
+  SPECTRO_TASK_NS=$(kubectl get ns -o=name | grep '^namespace/spectro-task-' | sed "s/^.\{10\}//")
+  if [[ -z "${SPECTRO_TASK_NS}" ]]; then
+    techo "Spectro task UUID namespace is empty."
+  else
+    for NS in $(echo $SPECTRO_TASK_NS | tr " " "\n"); do
+      techo "Adding namespace $NS for logs collection."
+      SYSTEM_NAMESPACES+=("$NS")
+    done
+  fi
+
+  CLUSTER_NAME=$(kubectl get spc -n "${CLUSTER_NS}" --output=custom-columns="Name:.metadata.name" --no-headers 2>/dev/null)
+	if [[ -z "${CLUSTER_NAME}" ]]; then
+		techo "Cluster name is empty. Please check if the cluster is registered with Palette"
+		CLUSTER_NAME="spectro-cluster"
+	fi
+}
+
+function run-mongo-eval() {
+  local pod="$1"
+  local mongo_eval="$2"
+  local mongo_password="${3:-}"
+  local remote_runner
+
+  remote_runner='
+mongo_shell=$1
+auth_mode=$2
+mongo_eval=$3
+
+case "$auth_mode" in
+  tls)
+    mongo_user=${MONGODB_INITDB_ROOT_USERNAME:-}
+    mongo_password=${MONGODB_INITDB_ROOT_PASSWORD:-}
+    if [ -z "$mongo_user" ] || [ -z "$mongo_password" ]; then
+      echo "MongoDB root credentials are missing from the container environment" >&2
+      exit 1
+    fi
+    exec "$mongo_shell" \
+      -u "$mongo_user" \
+      -p "$mongo_password" \
+      --host "${HOSTNAME:-localhost}" \
+      --tls \
+      --tlsCAFile /var/mongodb/tls/ca.crt \
+      --tlsCertificateKeyFile /var/mongodb/tls/tls-combined.pem \
+      --tlsAllowInvalidHostnames \
+      admin --quiet --eval "$mongo_eval"
+    ;;
+  standard)
+    mongo_password=$(cat)
+    if [ -z "$mongo_password" ]; then
+      echo "MongoDB root password was not supplied on stdin" >&2
+      exit 1
+    fi
+    exec "$mongo_shell" \
+      -u root \
+      -p "$mongo_password" \
+      --authenticationDatabase admin \
+      admin --quiet --eval "$mongo_eval"
+    ;;
+  *)
+    echo "Unknown MongoDB authentication mode: $auth_mode" >&2
+    exit 1
+    ;;
+esac'
+
+  case "$MONGO_AUTH_MODE" in
+    tls)
+      kubectl exec -n hubble-system "$pod" -c mongo -- \
+        sh -c "$remote_runner" spectro-mongo-status \
+        "$MONGO_CMD" "$MONGO_AUTH_MODE" "$mongo_eval"
+      ;;
+    standard)
+      printf '%s' "$mongo_password" |
+        kubectl exec -i -n hubble-system "$pod" -c mongo -- \
+          sh -c "$remote_runner" spectro-mongo-status \
+          "$MONGO_CMD" "$MONGO_AUTH_MODE" "$mongo_eval"
+      ;;
+    *)
+      techo "Unknown MongoDB authentication mode: $MONGO_AUTH_MODE"
+      return 1
+      ;;
+  esac
+}
+
+function mongo-status() {
+  local DB_PASSWORD=""
+
+  [[ "$IS_ENTERPRISE_CLUSTER" != true ]] && return
+  
+  techo "Collecting MongoDB status"
+  mkdir -p "${TMPDIR}/mongo"
+
+  # Find all running mongo pods
+  MONGO_PODS=$(kubectl get pods -n hubble-system --field-selector=status.phase=Running -o custom-columns="NAME:.metadata.name" --no-headers | grep mongo)
+  
+  if [[ -z "$MONGO_PODS" ]]; then
+    echo "No running MongoDB pods found in hubble-system namespace" > "${TMPDIR}/mongo/status.txt"
+    return
+  fi
+
+  # Use first pod to detect mongo shell and auth method
+  FIRST_POD=$(echo "$MONGO_PODS" | head -1)
+
+  # Try mongosh first, fall back to mongo for older versions (use full path)
+  if kubectl exec -n hubble-system "$FIRST_POD" -c mongo -- which mongosh >/dev/null 2>&1; then
+    MONGO_CMD=$(kubectl exec -n hubble-system "$FIRST_POD" -c mongo -- which mongosh 2>/dev/null)
+  elif kubectl exec -n hubble-system "$FIRST_POD" -c mongo -- which mongo >/dev/null 2>&1; then
+    MONGO_CMD=$(kubectl exec -n hubble-system "$FIRST_POD" -c mongo -- which mongo 2>/dev/null)
+  else
+    techo "Neither mongosh nor mongo command found in pod"
+    echo "Neither mongosh nor mongo command found in pod" > "${TMPDIR}/mongo/status.txt"
+    return
+  fi
+  techo "Using MongoDB shell: $MONGO_CMD"
+
+  # Check if TLS is enabled (VerteX EC cluster)
+  if kubectl exec -n hubble-system "$FIRST_POD" -c mongo -- test -f /var/mongodb/tls/ca.crt 2>/dev/null; then
+    techo "Detected VerteX EC cluster (TLS enabled)"
+    MONGO_AUTH_MODE=tls
+    DB_PASSWORD=""
+  else
+    techo "Detected standard EC cluster"
+    MONGO_AUTH_MODE=standard
+    DB_PASSWORD=$(kubectl get secret spectromongosecret -o jsonpath="{.data.mongoRootPassword}" -n hubble-system 2>/dev/null | decode_base64 2>/dev/null)
+    if [[ -z "$DB_PASSWORD" ]]; then
+      echo "Failed to retrieve MongoDB password" > "${TMPDIR}/mongo/status.txt"
+      return
+    fi
+  fi
+
+  # Find a pod that's part of the replica set
+  MONGO_POD=""
+  for POD in $MONGO_PODS; do
+    techo "Trying MongoDB pod: $POD"
+    if run-mongo-eval "$POD" 'rs.status()' "$DB_PASSWORD" >/dev/null 2>&1; then
+      MONGO_POD="$POD"
+      techo "Using MongoDB pod: $MONGO_POD (replica set member)"
+      break
+    fi
+    techo "Pod $POD is not a replica set member, trying next..."
+  done
+
+  if [[ -z "$MONGO_POD" ]]; then
+    echo "No MongoDB pods found that are part of the replica set" > "${TMPDIR}/mongo/status.txt"
+    return
+  fi
+
+  techo "Collecting MongoDB replica set status"
+  run-mongo-eval "$MONGO_POD" 'JSON.stringify(rs.status(), null, 2)' "$DB_PASSWORD" > "${TMPDIR}/mongo/rs-status.json" 2>&1
+
+  techo "Collecting MongoDB replica set configuration"
+  run-mongo-eval "$MONGO_POD" 'JSON.stringify(rs.conf(), null, 2)' "$DB_PASSWORD" > "${TMPDIR}/mongo/rs-conf.json" 2>&1
+
+  techo "Collecting MongoDB replication info"
+  run-mongo-eval "$MONGO_POD" 'rs.printReplicationInfo()' "$DB_PASSWORD" > "${TMPDIR}/mongo/replication-info.txt" 2>&1
+
+  techo "Collecting MongoDB per-pod disk usage (df)"
+  : > "${TMPDIR}/mongo/disk-usage.txt"
+  while IFS= read -r POD; do
+    [ -n "$POD" ] || continue
+    {
+      echo "== $POD =="
+      kubectl exec -n hubble-system "$POD" -c mongo -- df -h /var/lib/mongodb 2>&1
+      echo
+    } >> "${TMPDIR}/mongo/disk-usage.txt"
+  done < <(printf '%s\n' "$MONGO_PODS")
+
+  techo "Collecting MongoDB database + collection sizes"
+  run-mongo-eval "$MONGO_POD" '
+    db.adminCommand({listDatabases:1}).databases.forEach(function(d){
+      var s = db.getSiblingDB(d.name).stats(1024*1024);
+      print("DB "+d.name+" storageSize(MB)="+s.storageSize+" dataSize(MB)="+s.dataSize);
+      db.getSiblingDB(d.name).getCollectionNames().forEach(function(c){
+        var cs = db.getSiblingDB(d.name).getCollection(c).stats(1024*1024);
+        print("  "+d.name+"."+c+" storageSize(MB)="+cs.storageSize+" size(MB)="+cs.size+" count="+cs.count);
+      });
+    });' "$DB_PASSWORD" > "${TMPDIR}/mongo/db-collection-sizes.txt" 2>&1
+
+  DB_PASSWORD=""
+}
+
+function k8s-resources() {
+  if ! kubectl version >/dev/null 2>&1; then
+    techo "kubectl command not found"
+    return
+  fi
+
+  techo "Collecting logs from following namespaces: ${SYSTEM_NAMESPACES[*]}"
+
+  techo "Collecting k8s cluster-info"
+  mkdir -p "${TMPDIR}/k8s/cluster-info"
+  kubectl version -o yaml > "${TMPDIR}/k8s/cluster-info/cluster-version.yaml" 2>&1
+  kubectl cluster-info > "${TMPDIR}/k8s/cluster-info/cluster-info" 2>&1
+
+  techo "Collecting k8s cluster-info dump"
+  mkdir -p "${TMPDIR}/k8s/cluster-info/dump"
+  kubectl cluster-info dump --namespaces "$(IFS=,; echo "${SYSTEM_NAMESPACES[*]}")" --output-directory="${TMPDIR}/k8s/cluster-info/dump" --output=yaml 2>&1
+  kubectl api-resources -o wide > "${TMPDIR}/k8s/cluster-info/api-resources" 2>&1
+
+  techo "Collecting k8s resources"
+  mkdir -p "${TMPDIR}/k8s/cluster-resources"
+  for RESOURCE in "${API_RESOURCES[@]}"; do
+    printf "\rCollecting k8s resource: %-50s" "${RESOURCE}"
+    kubectl get "$RESOURCE" --all-namespaces --show-managed-fields -o yaml > "${TMPDIR}/k8s/cluster-resources/${RESOURCE}.yaml" 2>&1
+  done
+  printf "\n"
+
+  techo "Collecting k8s namespaced resources"
+  for RESOURCE in "${API_RESOURCES_NAMESPACED[@]}"; do
+    mkdir -p "${TMPDIR}/k8s/cluster-resources/${RESOURCE}"
+    printf "\rCollecting k8s namespaced resource: %-50s" "${RESOURCE}"
+    for NS in "${SYSTEM_NAMESPACES[@]}"; do
+      kubectl get "$RESOURCE" -n "$NS" --show-managed-fields -o yaml > "${TMPDIR}/k8s/cluster-resources/${RESOURCE}/${NS}.yaml" 2>&1
+    done
+  done
+  printf "\n"
+
+  techo "Collecting helm release secrets"
+  mkdir -p "${TMPDIR}/k8s/cluster-resources/secrets"
+  for NS in "${SYSTEM_NAMESPACES[@]}"; do
+    kubectl get secret -n "$NS" --field-selector type=helm.sh/release.v1 --show-managed-fields -o yaml > "${TMPDIR}/k8s/cluster-resources/secrets/${NS}.yaml" 2>&1
+  done
+
+  techo "Collecting k8s custom-resources"
+  mkdir -p "${TMPDIR}/k8s/cluster-resources/custom-resources"
+
+  techo "Collecting k8s cluster-scoped custom-resources"
+  CLUSTER_CRDS=$(kubectl get crd -o custom-columns=NAME:.metadata.name,SCOPE:.spec.scope --no-headers | grep "Cluster" | awk '{print $1}')
+  for CRD in $CLUSTER_CRDS; do
+    COUNT=$(kubectl get "$CRD" --no-headers 2>/dev/null | wc -l | xargs)
+    if [ $COUNT -gt 0 ]; then
+      printf "\rCollecting k8s cluster-scoped custom-resource: %-50s" "${CRD}"
+      kubectl get "$CRD" --show-managed-fields -o yaml > "${TMPDIR}/k8s/cluster-resources/custom-resources/${CRD}.yaml" 2>&1
+    fi
+  done
+  printf "\n"
+
+  techo "Collecting k8s namespace-scoped custom-resources"
+  NAMESPACED_CRDS=$(kubectl get crd -o custom-columns=NAME:.metadata.name,SCOPE:.spec.scope --no-headers | grep "Namespaced" | awk '{print $1}')
+  for CRD in $NAMESPACED_CRDS; do
+    ALL_COUNT=$(kubectl get "$CRD" -A --no-headers 2>/dev/null | wc -l | xargs)
+    if [ $ALL_COUNT -gt 0 ]; then
+      printf "\rCollecting k8s namespace-scoped custom-resource: %-50s" "${CRD}"
+      for NS in "${SYSTEM_NAMESPACES[@]}"; do
+        COUNT=$(kubectl get "$CRD" -n "$NS" --no-headers 2>/dev/null | wc -l | xargs)
+        if [ $COUNT -gt 0 ]; then
+          mkdir -p "${TMPDIR}/k8s/cluster-resources/custom-resources/${CRD}"
+            kubectl get "$CRD" -n "$NS" --show-managed-fields -o yaml > "${TMPDIR}/k8s/cluster-resources/custom-resources/${CRD}/${NS}.yaml" 2>&1
+          fi
+      done
+    fi
+  done
+  printf "\n"
+
+  techo "Collecting k8s metrics"
+  mkdir -p "${TMPDIR}/k8s/metrics"
+  kubectl top nodes > "${TMPDIR}/k8s/metrics/nodes-metrics" 2>&1
+  kubectl top pods --all-namespaces > "${TMPDIR}/k8s/metrics/pods-metrics" 2>&1
+  kubectl top pods --all-namespaces --containers > "${TMPDIR}/k8s/metrics/pods-containers-metrics" 2>&1
+
+  techo "Collecting logs from previous pods"
+  mkdir -p "${TMPDIR}/k8s/previous-pod-logs"
+  for NS in "${SYSTEM_NAMESPACES[@]}"; do
+    for POD in $(kubectl get pods -n "$NS" --no-headers -o custom-columns="NAME:.metadata.name"); do
+      LOGS=$(kubectl logs -n "$NS" "$POD" --all-containers --previous 2>&1)
+      if [[ -n "$LOGS" ]]; then
+        mkdir -p "${TMPDIR}/k8s/previous-pod-logs/${NS}/${POD}"
+        echo "$LOGS" > "${TMPDIR}/k8s/previous-pod-logs/${NS}/${POD}/previous.log"
+      fi
+    done
+  done
+}
+
+function rbac-error-message() {
+  local NS_LIST="$*"
+  cat <<EOF
+ERROR: Cannot list pods in namespace(s): ${NS_LIST}
+
+The user running this script does not have permission to list pods in one or
+more targeted namespaces. Support bundles require pod access for meaningful
+diagnostics.
+
+Action: Check the ClusterRole or Role attached to the user or service account
+        running this script. Ensure it grants at least 'list' (and 'get') on
+        pods in the affected namespaces, for example:
+
+          rules:
+          - apiGroups: [""]
+            resources: [pods]
+            verbs: [get, list]
+
+Exiting without creating an incomplete bundle.
+EOF
+}
+
+function cluster-rbac-error-message() {
+  local RESOURCE_LIST="$*"
+  cat <<EOF
+ERROR: Cannot list cluster-scoped resource(s): ${RESOURCE_LIST}
+
+The user running this script does not have permission to list one or more
+cluster-scoped resources required for a complete support bundle.
+
+Action: Check the ClusterRole attached to the user or service account running
+        this script. Ensure it grants at least 'list' (and 'get') on the denied
+        resources, for example:
+
+          rules:
+          - apiGroups: [""]
+            resources: [namespaces, nodes]
+            verbs: [get, list]
+          - apiGroups: [apiextensions.k8s.io]
+            resources: [customresourcedefinitions]
+            verbs: [get, list]
+
+Exiting without creating an incomplete bundle.
+EOF
+}
+
+function validate-namespace-coverage() {
+  local -a COLLECT_NAMESPACES=()
+  local -a SKIPPED_NAMESPACES=()
+  local -a RBAC_FAILURES=()
+  local -a CLUSTER_RBAC_OK=()
+  local -a CLUSTER_RBAC_FAILURES=()
+  local -a REQUIRED_CLUSTER_LIST=(
+    namespaces
+    nodes
+    customresourcedefinitions.apiextensions.k8s.io
+  )
+  local NS REASON RESOURCE
+
+  for RESOURCE in "${REQUIRED_CLUSTER_LIST[@]}"; do
+    if can-i-list "$RESOURCE"; then
+      CLUSTER_RBAC_OK+=("$RESOURCE")
+    else
+      CLUSTER_RBAC_FAILURES+=("$RESOURCE")
+    fi
+  done
+
+  for NS in "${SYSTEM_NAMESPACES[@]}"; do
+    if ! kubectl get ns "$NS" >/dev/null 2>&1; then
+      SKIPPED_NAMESPACES+=("${NS}|namespace not found")
+      continue
+    fi
+
+    if ! can-list-pods-in-namespace "$NS"; then
+      RBAC_FAILURES+=("$NS")
+      continue
+    fi
+
+    COLLECT_NAMESPACES+=("$NS")
+  done
+
+  {
+    echo "RBAC / Namespace Coverage Summary"
+    echo "Generated: $(timestamp)"
+    echo ""
+    echo "Cluster-scoped permissions"
+    printf "%-12s %-50s %s\n" "STATUS" "RESOURCE" "NOTES"
+    printf "%-12s %-50s %s\n" "------" "--------" "-----"
+    for RESOURCE in "${CLUSTER_RBAC_OK[@]}"; do
+      printf "%-12s %-50s %s\n" "ALLOWED" "$RESOURCE" "can list"
+    done
+    for RESOURCE in "${CLUSTER_RBAC_FAILURES[@]}"; do
+      printf "%-12s %-50s %s\n" "DENIED" "$RESOURCE" "cannot list (RBAC)"
+    done
+    echo ""
+    echo "Namespace coverage"
+    printf "%-12s %-40s %s\n" "STATUS" "NAMESPACE" "NOTES"
+    printf "%-12s %-40s %s\n" "------" "---------" "-----"
+    for NS in "${COLLECT_NAMESPACES[@]}"; do
+      printf "%-12s %-40s %s\n" "COLLECT" "$NS" "accessible"
+    done
+    for ENTRY in "${SKIPPED_NAMESPACES[@]}"; do
+      NS="${ENTRY%%|*}"
+      REASON="${ENTRY#*|}"
+      printf "%-12s %-40s %s\n" "SKIP" "$NS" "$REASON"
+    done
+    for NS in "${RBAC_FAILURES[@]}"; do
+      printf "%-12s %-40s %s\n" "DENIED" "$NS" "cannot list pods (RBAC)"
+    done
+    echo ""
+    echo "Cluster resources allowed: ${#CLUSTER_RBAC_OK[@]}"
+    echo "Cluster resources denied:  ${#CLUSTER_RBAC_FAILURES[@]}"
+    echo "Namespaces to collect:     ${#COLLECT_NAMESPACES[@]}"
+    echo "Namespaces skipped:        ${#SKIPPED_NAMESPACES[@]}"
+    if [[ ${#RBAC_FAILURES[@]} -gt 0 ]]; then
+      echo "Namespaces denied:         ${#RBAC_FAILURES[@]}"
+    fi
+  } | tee "${TMPDIR}/namespace-coverage.txt"
+
+  techo "Namespace coverage summary written to namespace-coverage.txt"
+
+  if [[ ${#CLUSTER_RBAC_FAILURES[@]} -gt 0 ]]; then
+    cluster-rbac-error-message "${CLUSTER_RBAC_FAILURES[*]}"
+    cleanup
+    exit 1
+  fi
+
+  if [[ ${#RBAC_FAILURES[@]} -gt 0 ]]; then
+    rbac-error-message "${RBAC_FAILURES[*]}"
+    cleanup
+    exit 1
+  fi
+
+  if [[ ${#COLLECT_NAMESPACES[@]} -eq 0 ]]; then
+    techo "ERROR: No namespaces available for collection after coverage validation."
+    techo "Action: Verify cluster access and that at least one targeted namespace exists and is accessible."
+    cleanup
+    exit 1
+  fi
+
+  SYSTEM_NAMESPACES=("${COLLECT_NAMESPACES[@]}")
+}
+
+function setup() {
+  TMPDIR_BASE=$(mktemp -d $MKTEMP_BASEDIR) || { techo 'Creating temporary directory failed, please check options'; exit 1; }
+  techo "Created temporary directory: $TMPDIR_BASE"
+  if [[ -z "${CLUSTER_NAME}" ]]; then
+    CLUSTER_NAME="spectro-cluster"
+  fi
+
+  LOGNAME="${CLUSTER_NAME}-$(date +'%Y-%m-%d_%H_%M_%S')"
+  TMPDIR="${TMPDIR_BASE}/${LOGNAME}"
+  mkdir -p "$TMPDIR" || { techo "Failed to create temporary log directory $TMPLOG_DIR"; exit 1; }
+  
+  # Save original file descriptors before redirecting
+  exec 3>&1 4>&2
+  exec > >(tee -a "$TMPDIR/console.log") 2>&1
+  techo "Collecting logs in $TMPDIR"
+  techo "Support Bundle Version: $SB_VERSION" > "$TMPDIR/.support-bundle"
+}
+
+function archive() {
+  local archive_path="${PWD}/${LOGNAME}.tar.gz"
+  local partial_path="${archive_path}.partial.$$"
+
+  techo "Creating archive ${archive_path}"
+
+  # Restore original fds to close tee pipe and flush console.log
+  exec 1>&3 2>&4
+
+  if [[ ! -d "${TMPDIR:-}" ]]; then
+    techo "ERROR: Collection workspace is missing: ${TMPDIR:-<not set>}"
+    return 1
+  fi
+
+  rm -f -- "$partial_path"
+  if ! tar -czf "$partial_path" -C "$TMPDIR_BASE" "$LOGNAME"; then
+    rm -f -- "$partial_path"
+    techo "ERROR: Failed to create support archive."
+    techo "Collection workspace preserved at: $TMPDIR"
+    techo "Retry with: tar -czf '${LOGNAME}.tar.gz' -C '${TMPDIR_BASE}' '${LOGNAME}'"
+    return 1
+  fi
+
+  if ! mv -f -- "$partial_path" "$archive_path"; then
+    techo "ERROR: Archive was created but could not be moved into place."
+    techo "Partial archive preserved at: $partial_path"
+    techo "Collection workspace preserved at: $TMPDIR"
+    return 1
+  fi
+
+  techo "Logs are archived in $archive_path"
+  techo "Please upload the support bundle to the support ticket"
+}
+
+function cleanup() {
+  [[ -n "${TMPDIR_BASE:-}" && -d "$TMPDIR_BASE" ]] || return 0
+  rm -rf -- "$TMPDIR_BASE" > /dev/null 2>&1
+}
+
+function help() {
+  echo "SpectroCloud Infrastructure support bundle collector
+  Usage: support-bundle-infra.sh [ flags ]
+
+  All flags are optional
+
+  -d    Output directory for temporary storage and .tar.gz archive (ex: -d /var/tmp)
+  -n    Additional namespaces to collect logs from. (ex: -n hello-universe,hello-world)
+  -r    Additional namespace scoped resources to collect. (ex: -r certificates.cert-manager.io,clusterissuers.cert-manager.io)
+  -R    Additional cluster scoped resources to collect. (ex: -R clusterissuers.cert-manager.io,clusterissuers.cert-manager.io)
+
+  "
+
+
+}
+
+function main() {
+  local opt
+  OPTIND=1
+  while getopts "d:n:r:R:h" opt; do
+    case $opt in
+    d)
+      MKTEMP_BASEDIR="-p ${OPTARG}"
+      techo "Using custom output directory: $MKTEMP_BASEDIR"
+      ;;
+    n)
+      NAMESPACES=${OPTARG}
+      techo "Collecting logs for additional namespaces $NAMESPACES"
+      for NS in $(echo $NAMESPACES | tr "," "\n"); do
+        SYSTEM_NAMESPACES+=("$NS")
+      done
+      ;;
+    r)
+      RESOURCES=${OPTARG}
+      techo "Collecting logs for additional namespaced resources $RESOURCES"
+      for RESOURCE in $(echo $RESOURCES | tr "," "\n"); do
+        API_RESOURCES_NAMESPACED+=("$RESOURCE")
+      done
+      ;;
+    R)
+      RESOURCES=${OPTARG}
+      techo "Collecting logs for additional resources $RESOURCES"
+      for RESOURCE in $(echo $RESOURCES | tr "," "\n"); do
+        API_RESOURCES+=("$RESOURCE")
+      done
+      ;;
+    h)
+      help
+      return 0
+      ;;
+    *)
+      help
+      return 1
+      ;;
+    esac
+  done
+
+  is-kubeconfig-set || {
+    echo "KUBECONFIG is not set. Unable to collect Kubernetes logs."
+    cleanup
+    return 1
+  }
+  spectro-k8s-defaults
+  setup
+  validate-namespace-coverage
+  k8s-resources
+  mongo-status
+  if ! archive; then
+    return 1
+  fi
+  cleanup
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

@@ -1,0 +1,17 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CAPAPassRole",
+      "Effect": "Allow",
+      "Action": [
+        "iam:GetRole",
+        "iam:PassRole",
+        "iam:ListAttachedRolePolicies"
+      ],
+      "Resource": [
+        "${CAPA_ROLE_PATTERN}"
+      ]
+    }
+  ]
+}

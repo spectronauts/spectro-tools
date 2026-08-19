@@ -1,0 +1,14 @@
+.DS_Store
+
+# Downloaded air-gap installers, extracted content, bundles, and signatures.
+# The Spectro public verification key is intentionally tracked.
+/downloads/*
+!/downloads/spectro_public_key.pem
+/*.bin
+/*.zst
+/*.sig.bin
+**/spectroairgap-*/
+
+# Runtime logs may expose registry paths and account details.
+*.log
+/logs/

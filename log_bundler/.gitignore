@@ -1,0 +1,8 @@
+# Support bundles contain logs, Kubernetes resources, Helm release Secrets,
+# account details, and other potentially sensitive diagnostic data.
+/*.tar.gz
+/*.tgz
+/support-bundles/
+
+# An interrupted run with -d pointing here may leave a temporary directory.
+/tmp.*/

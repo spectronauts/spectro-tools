@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Central configuration template for the spectro-tools repository.
+#
+# Copy this file to common-config.sh before using the tools. Values already
+# present in the environment take precedence. Keep credentials empty in the
+# tracked template and provide them through the environment or an explicitly
+# selected, Git-ignored override file.
+
+CONFIG_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SPECTRO_TOOLS_DIR="$(cd -- "${CONFIG_DIR}/.." && pwd)"
+# shellcheck source=common-functions.sh
+source "${CONFIG_DIR}/common-functions.sh"
+
+# =============================================================================
+# Common Variables
+# =============================================================================
+: "${VERTEX_VERSION=}" # i.e. VerteX version for image pushing (ex: 4.9.38)
+: "${AWS_ACCOUNT=}" # e.g. 123456789012
+: "${AWS_REGION=}" # e.g. us-gov-west-1
+: "${ECR_REGISTRY=${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com}"  # No Config Needed
+# =============================================================================
+# AWS ECR air-gap tools
+# =============================================================================
+# push_bin_to_ecr.sh, push_from_url.sh, push_zst_to_ecr========================
+: "${ECR_BASE_CONTENT_PATH=}" # e.g. 103448924380.dkr.ecr.us-gov-west-1.amazonaws.com/BASE_CONTENT_PATH/spectro-images
+: "${ECR_IMAGE_BASE=spectro-images}" # No Config Needed unless very specific need exists
+: "${ECR_PACK_BASE=}" # No Config Needed unless very specific need exists
+: "${ECR_IMAGE_REGISTRY_TYPE=ecr-private}"  # Trying to remove in next version
+: "${ECR_PACK_REGISTRY_TYPE=ecr-private}"  # Trying to remove in next version
+: "${DOWNLOAD_USER=spectro}"  # No Config Needed 
+: "${DOWNLOAD_PASS=}" # No Commits
+: "${ECR_SCRIPT_DIR=${SPECTRO_TOOLS_DIR}/ecr}"  # No Config Needed
+: "${AIRGAP_DIR=${ECR_SCRIPT_DIR}/downloads/spectroairgap-${VERTEX_VERSION}}"  # No Config Needed
+: "${BINARY=${ECR_SCRIPT_DIR}/downloads/airgap-vertex-v${VERTEX_VERSION}.bin}"  # No Config Needed
+: "${SKIP_EXTRACTION=false}"
+# delete_ecr_images.sh ========================================================
+: "${ECR_DELETE_PATH=/spectro-packs}" # Repository folder path to delete after ECR_REGISTRY
+
+# =============================================================================
+# validate-iam
+# =============================================================================
+: "${AWS_PROFILE=}"
+: "${PARTITION=aws}" 
+: "${AUTH_MODE=}" # secret, sts, or pod-identity
+: "${CLUSTER_NAME=}"         # Empty skips live EKS cluster checks
+: "${ROLE_ID_SUFFIX=}" # Shared identifier used by the derived Palette role names
+: "${DEPLOYER_ROLE_NAME=SpectroCloudPaletteRole${ROLE_ID_SUFFIX:+-${ROLE_ID_SUFFIX}}}"
+: "${HUBBLE_ROLE_NAME=SpectroCloudHubbleRole${ROLE_ID_SUFFIX:+-${ROLE_ID_SUFFIX}}}"
+: "${IDENTITY_ROLE_NAME=SpectroCloudIdentityRole${ROLE_ID_SUFFIX:+-${ROLE_ID_SUFFIX}}}"
+: "${PERMISSION_PROFILE=minimum-dynamic}" # core, minimum-dynamic, minimum-static
+: "${PLACEMENT_MODE=dynamic}"              # dynamic or static
+: "${TARGET_ACCOUNT_ID=}"                  # Optional cross-account STS target
+
+# =============================================================================
+# vertex-utilization
+# =============================================================================
+: "${PALETTE_API_URL=}"
+: "${API_KEY=}"
+: "${PROJECT_UID=}"
+: "${OUTPUT_FILE=artifacts/utilization-report.csv}"
+
+# =============================================================================
+# log_bundler.
+# =============================================================================
