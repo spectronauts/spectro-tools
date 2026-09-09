@@ -93,14 +93,8 @@ export ECR_IMAGE_REGISTRY=${ECR_REGISTRY}
 export ECR_IMAGE_BASE="${ECR_BASE_CONTENT_PATH:+${ECR_BASE_CONTENT_PATH%/}/}${ECR_IMAGE_BASE#/}"
 export ECR_IMAGE_REGISTRY_REGION=${AWS_REGION}
 export ECR_PACK_REGISTRY=${ECR_REGISTRY}
-airgap_pack_base="${ECR_BASE_CONTENT_PATH:+${ECR_BASE_CONTENT_PATH%/}/}${ECR_PACK_BASE#/}"
-airgap_pack_base="${airgap_pack_base%/}"
-if [[ "${airgap_pack_base}" == "spectro-packs" ]]; then
-  airgap_pack_base=""
-elif [[ "${airgap_pack_base}" == */spectro-packs ]]; then
-  airgap_pack_base="${airgap_pack_base%/spectro-packs}"
-fi
-export ECR_PACK_BASE="${airgap_pack_base}"
+export ECR_PACK_BASE
+ECR_PACK_BASE="$(resolve_ecr_pack_base "${ECR_BASE_CONTENT_PATH}" "${ECR_PACK_BASE}")"
 export ECR_PACK_REGISTRY_REGION=${AWS_REGION}
 export SCRIPT_DIR="${SCRIPT_DIR}"
 export AIRGAP_DIR="${AIRGAP_DIR}"

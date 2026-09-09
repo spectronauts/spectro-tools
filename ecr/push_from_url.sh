@@ -33,7 +33,6 @@ BUNDLE_DIR="${BUNDLE_URL_DIR}"
 DOWNLOAD_DIR="${BUNDLE_DIR}/downloads"
 mkdir -p "${DOWNLOAD_DIR}"
 
-ECR_PACK_BASE="spectro-packs"
 validateVar AWS_ACCOUNT
 validateVar AWS_REGION
 validateVar ECR_BASE_CONTENT_PATH warn || true
@@ -45,7 +44,8 @@ validateVar DOWNLOAD_PASS fatal mask
 
 export BUNDLE_DIR
 export BUNDLE_URL_FILE
-export BASE_PATH="${ECR_BASE_CONTENT_PATH:+${ECR_BASE_CONTENT_PATH%/}/}${ECR_PACK_BASE#/}"
+export PACK_REGISTRY
+PACK_REGISTRY="$(build_palette_pack_registry "${ECR_REGISTRY}" "${ECR_BASE_CONTENT_PATH}" "${ECR_PACK_BASE}")"
 
 
 echo "==> Downloading all .zst bundles from ${BUNDLE_URL_FILE} to ${DOWNLOAD_DIR}"
@@ -159,7 +159,7 @@ palette content registry-login \
   --password "$(aws ecr get-login-password \
   --region ${AWS_REGION})"
 
-echo "==> Pushing all .zst bundles from ${DOWNLOAD_DIR} to ${ECR_REGISTRY}/${BASE_PATH}"
+echo "==> Pushing all .zst bundles from ${DOWNLOAD_DIR} to ${PACK_REGISTRY}"
 
 successful_pushes=0
 push_failures=()
@@ -168,7 +168,7 @@ for bundle in "${verified_bundles[@]}"; do
   echo "--> Pushing: ${bundle}"
   if palette content push \
     --file "${bundle}" \
-    --registry "${ECR_REGISTRY}/${BASE_PATH}" \
+    --registry "${PACK_REGISTRY}" \
     --insecure; then
     successful_pushes=$((successful_pushes + 1))
     echo "--> Push succeeded: ${bundle}"
@@ -202,4 +202,4 @@ echo "==> All bundles pushed successfully."
 unset BUNDLE_DIR
 unset BUNDLE_URL_FILE
 unset DOWNLOAD_DIR
-unset BASE_PATH
+unset PACK_REGISTRY

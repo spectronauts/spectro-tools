@@ -134,6 +134,37 @@ confirm_action() {
   esac
 }
 
+# Palette and the extracted air-gap tooling append the spectro-packs repository
+# namespace. Return only the configured parent path so it is not duplicated.
+resolve_ecr_pack_base() {
+  local base_content_path="${1:-}"
+  local pack_base="${2:-}"
+  local resolved_base
+
+  base_content_path="${base_content_path#/}"
+  base_content_path="${base_content_path%/}"
+  pack_base="${pack_base#/}"
+  pack_base="${pack_base%/}"
+  resolved_base="${base_content_path}${base_content_path:+${pack_base:+/}}${pack_base}"
+
+  if [[ "${resolved_base}" == "spectro-packs" ]]; then
+    resolved_base=""
+  elif [[ "${resolved_base}" == */spectro-packs ]]; then
+    resolved_base="${resolved_base%/spectro-packs}"
+  fi
+
+  printf '%s\n' "${resolved_base}"
+}
+
+build_palette_pack_registry() {
+  local registry="${1:-}"
+  local base_path
+
+  registry="${registry%/}"
+  base_path="$(resolve_ecr_pack_base "${2:-}" "${3:-}")"
+  printf '%s%s\n' "${registry}" "${base_path:+/${base_path}}"
+}
+
 as_root() {
   if ((EUID == 0)); then
     "$@"

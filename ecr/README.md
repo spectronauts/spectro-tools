@@ -71,6 +71,10 @@ Images: <registry>/<base-content-path>/spectro-images/...
 Packs:  <registry>/<base-content-path>/spectro-packs/...
 ```
 
+The Palette CLI and air-gap tooling add `spectro-packs` automatically. A
+trailing `spectro-packs` in either configured pack path is normalized away so
+the destination never contains `spectro-packs/spectro-packs`.
+
 ## Behavior
 
 - `push_bin_to_ecr.sh` verifies prerequisites, downloads the installer when

@@ -26,7 +26,7 @@ validateVar ECR_PACK_BASE warn || true
 validateVar ECR_REGISTRY
 
 BUNDLE_DIR="${1:?Usage: $0 <bundle-dir>}" || echo "Bundle Directory: ${BUNDLE_DIR}"
-BASE_PATH="${ECR_BASE_CONTENT_PATH:+${ECR_BASE_CONTENT_PATH%/}/}${ECR_PACK_BASE#/}" || echo "Base Content Path: ${BASE_PATH}"
+PACK_REGISTRY="$(build_palette_pack_registry "${ECR_REGISTRY}" "${ECR_BASE_CONTENT_PATH}" "${ECR_PACK_BASE}")"
 
 shopt -s nullglob
 bundles=("${BUNDLE_DIR}"/*.zst)
@@ -43,7 +43,7 @@ palette content registry-login \
   --password "$(aws ecr get-login-password \
   --region ${AWS_REGION})"
 
-echo "==> Pushing all .zst bundles from ${BUNDLE_DIR} to ${ECR_REGISTRY}/${BASE_PATH}"
+echo "==> Pushing all .zst bundles from ${BUNDLE_DIR} to ${PACK_REGISTRY}"
 
 failed_bundles=()
 successful_pushes=0
@@ -52,7 +52,7 @@ for bundle in "${bundles[@]}"; do
   echo "--> Pushing: ${bundle}"
   if palette content push \
     --file "${bundle}" \
-    --registry "${ECR_REGISTRY}/${BASE_PATH}" \
+    --registry "${PACK_REGISTRY}" \
     --insecure; then
     successful_pushes=$((successful_pushes + 1))
     echo "--> Push succeeded: ${bundle}"
