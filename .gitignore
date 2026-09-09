@@ -1,0 +1,104 @@
+# macOS metadata
+.DS_Store
+**/.DS_Store
+
+# Editor and local shell state
+*.swp
+*.swo
+*~
+*.tmp
+tmp.*/
+.envrc
+.direnv/
+
+# Local environment and configuration overrides. Keep distributable examples
+# and templates trackable.
+.env
+.env.*
+*.env
+*.env.*
+!.env.example
+!.env.tmpl
+!*.env.example
+!*.env.tmpl
+*.local
+*.local.*
+*.conf
+*.config
+!*.conf.example
+!*.conf.tmpl
+!*.config.example
+!*.config.tmpl
+/config/common-config.sh
+!/config/common-config.sh.tmpl
+/config/common-config.local.sh
+
+# Kubernetes and cloud credential files
+kubeconfig
+kubeconfig-*
+*.kubeconfig
+*.kubeconfig.*
+.aws/
+.azure/
+.kube/
+.docker/
+.netrc
+.npmrc
+.pypirc
+credentials
+credentials.*
+*-credentials.json
+*service-account*.json
+*.token
+.vault-token
+
+# Private keys and certificate stores. PEM files are ignored by default because
+# they may contain private keys; explicitly approved public keys are re-included
+# by the owning tool's .gitignore.
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_rsa.*
+id_dsa
+id_dsa.*
+id_ecdsa
+id_ecdsa.*
+id_ed25519
+id_ed25519.*
+*.private.pem
+*-private.pem
+private-*.pem
+
+# Exported Kubernetes Secrets and database material
+*secret*.json
+*secret*.yaml
+*secret*.yml
+secrets/
+.secrets/
+*.bson
+*.dump
+*.archive
+dump/
+backups/
+palette-mongo-backup.*/
+palette-ec-restore-tls.*/
+
+# Logs and generated support bundles can contain cluster or account details.
+*.log
+*-????-??-??_??_??_??.tar.gz
+support-bundle*.tar.gz
+support-bundle*.tgz
+*.tar.gz.partial.*
+
+# Terraform state and variable files commonly contain credentials.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+!*.tfvars.json.example
